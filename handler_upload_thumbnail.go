@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	"github.com/csrrmrvll/tubely/internal/auth"
-	"github.com/csrrmrvll/tubely/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -30,38 +29,35 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
-
-	// TODO: implement the upload here
 	const maxMemory = 10 << 20 // 10 MB
-	err = r.ParseMultipartForm(maxMemory)
+	r.ParseMultipartForm(maxMemory)
+
+	file, header, err := r.FormFile("thumbnail")
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Error parsing form data", err)
-		return
-	}
-	file, _, err := r.FormFile("thumbnail")
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Error retrieving thumbnail file", err)
+		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
 		return
 	}
 	defer file.Close()
 
-	mediaType := r.Header.Get("Content-Type")
-	reader := io.LimitReader(file, maxMemory)
-	data, err := io.ReadAll(reader)
+	mediaType := header.Header.Get("Content-Type")
+	if mediaType == "" {
+		respondWithError(w, http.StatusBadRequest, "Missing Content-Type for thumbnail", nil)
+		return
+	}
+
+	data, err := io.ReadAll(file)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error reading thumbnail file", err)
+		respondWithError(w, http.StatusInternalServerError, "Error reading file", err)
 		return
 	}
 
 	video, err := cfg.db.GetVideo(videoID)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error retrieving video metadata", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't find video", err)
 		return
 	}
-
 	if video.UserID != userID {
-		respondWithError(w, http.StatusUnauthorized, "You are not authorized to upload a thumbnail for this video", nil)
+		respondWithError(w, http.StatusUnauthorized, "Not authorized to update this video", nil)
 		return
 	}
 
@@ -70,19 +66,15 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		mediaType: mediaType,
 	}
 
-	url := fmt.Sprintf("http://localhost:8091/api/thumbnails/%s", videoID)
+	url := fmt.Sprintf("http://localhost:%s/api/thumbnails/%s", cfg.port, videoID)
 	video.ThumbnailURL = &url
+
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error updating video metadata", err)
+		delete(videoThumbnails, videoID)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't update video", err)
 		return
 	}
-	fmt.Printf("Updated metadata: %v\n", video)
-	respondWithJSON(w, http.StatusOK, database.Video{
-		ID:           video.ID,
-		CreatedAt:    video.CreatedAt,
-		UpdatedAt:    video.UpdatedAt,
-		ThumbnailURL: video.ThumbnailURL,
-		VideoURL:     video.VideoURL,
-	})
+
+	respondWithJSON(w, http.StatusOK, video)
 }
