@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/csrrmrvll/tubely/internal/database"
-
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
