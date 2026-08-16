@@ -1,10 +1,12 @@
 package main
 
 import (
-	"encoding/base64"
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/csrrmrvll/tubely/internal/auth"
 	"github.com/google/uuid"
@@ -62,10 +64,38 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	base64Encoded := base64.StdEncoding.EncodeToString(data)
-	base64DataURL := fmt.Sprintf("data:%s;base64,%s", mediaType, base64Encoded)
+	fileExtension := ""
+	switch mediaType {
+	case "image/jpeg":
+		fileExtension = ".jpg"
+	case "image/png":
+		fileExtension = ".png"
+	default:
+		respondWithError(w, http.StatusBadRequest, "Unsupported media type", nil)
+		return
+	}
 
-	video.ThumbnailURL = &base64DataURL
+	filename := fmt.Sprintf("%s%s", videoID.String(), fileExtension)
+	dir := "assets"
+	os.MkdirAll(dir, os.ModePerm)
+	filePath := filepath.Join(dir, filename)
+	fmt.Printf("Saving thumbnail to %s\n", filePath)
+	fout, err := os.Create(filePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create file", err)
+		return
+	}
+	defer fout.Close()
+
+	_, err = io.Copy(fout, bytes.NewReader(data))
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't save file", err)
+		return
+	}
+
+	thumbnailDataURL := fmt.Sprintf("http://localhost:%d/assets/%s%s", cfg.port, videoID.String(), fileExtension)
+
+	video.ThumbnailURL = &thumbnailDataURL
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't update video", err)
