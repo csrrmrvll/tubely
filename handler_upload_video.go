@@ -6,13 +6,16 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/csrrmrvll/tubely/internal/auth"
 	"github.com/google/uuid"
 )
 
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 100<<30) // Limit request body to 1000 MB
+	const uploadLimit = 1 << 30
+	r.Body = http.MaxBytesReader(w, r.Body, uploadLimit)
+
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
 	if err != nil {
@@ -32,9 +35,6 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	const maxMemory = 10 << 20 // 10 MB
-	r.ParseMultipartForm(maxMemory)
-
 	video, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't find video", err)
@@ -45,54 +45,55 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	file, header, err := r.FormFile("video")
+	file, handler, err := r.FormFile("video")
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
 		return
 	}
 	defer file.Close()
 
-	mediaType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
+	mediaType, _, err := mime.ParseMediaType(handler.Header.Get("Content-Type"))
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid Content-Type", err)
 		return
 	}
 	if mediaType != "video/mp4" {
-		respondWithError(w, http.StatusBadRequest, "Invalid file type", nil)
+		respondWithError(w, http.StatusBadRequest, "Invalid file type, only MP4 is allowed", nil)
 		return
 	}
 
-	dst, err := os.CreateTemp("", "tubely-upload.mp4")
+	tempFile, err := os.CreateTemp("", "tubely-upload.mp4")
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Unable to create file on server", err)
+		respondWithError(w, http.StatusInternalServerError, "Could not create temp file", err)
 		return
 	}
-	defer os.Remove(dst.Name())
-	defer dst.Close()
+	defer os.Remove(tempFile.Name())
+	defer tempFile.Close()
 
-	if _, err = io.Copy(dst, file); err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error saving file", err)
+	if _, err := io.Copy(tempFile, file); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not write file to disk", err)
 		return
 	}
 
-	file.Seek(0, io.SeekStart)
-
-	assetPath := getAssetPath(mediaType)
-
-	params := s3.PutObjectInput{
-		Bucket:      &cfg.s3Bucket,
-		Key:         &assetPath,
-		Body:        dst,
-		ContentType: &mediaType,
-	}
-
-	_, err = cfg.s3Client.PutObject(r.Context(), &params)
+	_, err = tempFile.Seek(0, io.SeekStart)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error uploading to S3", err)
+		respondWithError(w, http.StatusInternalServerError, "Could not reset file pointer", err)
 		return
 	}
 
-	url := getS3ObjectURL(cfg.s3Bucket, cfg.s3Region, assetPath)
+	key := getAssetPath(mediaType)
+	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
+		Bucket:      aws.String(cfg.s3Bucket),
+		Key:         aws.String(key),
+		Body:        tempFile,
+		ContentType: aws.String(mediaType),
+	})
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error uploading file to S3", err)
+		return
+	}
+
+	url := cfg.getObjectURL(key)
 	video.VideoURL = &url
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
