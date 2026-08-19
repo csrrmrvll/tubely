@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -81,7 +85,12 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	key := getAssetPath(mediaType)
+	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not determine video aspect ratio", err)
+		return
+	}
+	key := aspectRatio + "/" + getAssetPath(mediaType)
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
 		Key:         aws.String(key),
@@ -102,4 +111,51 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	respondWithJSON(w, http.StatusOK, video)
+}
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	cmd := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+	buffer := &bytes.Buffer{}
+	cmd.Stdout = buffer
+	cmd.Stderr = buffer
+	err := cmd.Run()
+	if err != nil {
+		return "", err
+	}
+	var jsonOutput struct {
+		Streams []struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"streams"`
+	}
+	err = json.Unmarshal(buffer.Bytes(), &jsonOutput)
+	if err != nil {
+		return "", err
+	}
+
+	if len(jsonOutput.Streams) == 0 {
+		return "", fmt.Errorf("no streams found in video")
+	}
+	width := jsonOutput.Streams[0].Width
+	height := jsonOutput.Streams[0].Height
+	if width == 0 || height == 0 {
+		return "", fmt.Errorf("invalid width or height in video stream")
+	}
+	aspectRatio := "other" // Default aspect ratio
+	divisor := gcd(width, height)
+	width /= divisor
+	height /= divisor
+	if width/height == 16/9 {
+		aspectRatio = "landscape"
+	} else if width/height == 9/16 {
+		aspectRatio = "portrait"
+	}
+	return aspectRatio, nil
+}
+
+func gcd(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }
