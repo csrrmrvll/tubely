@@ -87,22 +87,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	processedFilePath, err := processVideoForFastStart(tempFile.Name())
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error processing video for fast start", err)
-		return
-	}
-
-	processedFile, err := os.Open(processedFilePath)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Could not open processed file", err)
-		return
-	}
-	defer processedFile.Close()
-	defer os.Remove(processedFilePath)
-
 	directory := ""
-	aspectRatio, err := getVideoAspectRatio(processedFile.Name())
+	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Error determining aspect ratio", err)
 		return
@@ -118,6 +104,21 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	key := getAssetPath(mediaType)
 	key = path.Join(directory, key)
+
+	processedFilePath, err := processVideoForFastStart(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error processing video", err)
+		return
+	}
+	defer os.Remove(processedFilePath)
+
+	processedFile, err := os.Open(processedFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not open processed file", err)
+		return
+	}
+	defer processedFile.Close()
+
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
 		Key:         aws.String(key),
@@ -181,24 +182,24 @@ func getVideoAspectRatio(filePath string) (string, error) {
 	return "other", nil
 }
 
-func processVideoForFastStart(filePath string) (string, error) {
-	tempFilePath := filePath + ".processing"
+func processVideoForFastStart(inputFilePath string) (string, error) {
+	processedFilePath := fmt.Sprintf("%s.processing", inputFilePath)
 
-	var stdout bytes.Buffer
-	cmd := exec.Command(
-		"ffmpeg",
-		"-v", "error",
-		"-i", filePath,
-		"-c", "copy",
-		"-movflags", "faststart",
-		"-f", "mp4",
-		tempFilePath,
-	)
-	cmd.Stderr = &stdout
+	cmd := exec.Command("ffmpeg", "-i", inputFilePath, "-movflags", "faststart", "-codec", "copy", "-f", "mp4", processedFilePath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("ffmpeg error: %s, %v", stdout.String(), err)
+		return "", fmt.Errorf("error processing video: %s, %v", stderr.String(), err)
 	}
 
-	return tempFilePath, nil
+	fileInfo, err := os.Stat(processedFilePath)
+	if err != nil {
+		return "", fmt.Errorf("could not stat processed file: %v", err)
+	}
+	if fileInfo.Size() == 0 {
+		return "", fmt.Errorf("processed file is empty")
+	}
+
+	return processedFilePath, nil
 }
