@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"github.com/csrrmrvll/tubely/internal/auth"
@@ -98,7 +97,7 @@ func (cfg *apiConfig) handlerVideoGet(w http.ResponseWriter, r *http.Request) {
 
 	video, err = cfg.dbVideoToSignedVideo(video)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Couldn't generate signed URL", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't generate presigned URL", err)
 		return
 	}
 
@@ -123,15 +122,14 @@ func (cfg *apiConfig) handlerVideosRetrieve(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	result_videos := make([]database.Video, len(videos))
 	for i, video := range videos {
 		video, err = cfg.dbVideoToSignedVideo(video)
 		if err != nil {
-			respondWithError(w, http.StatusInternalServerError, "Couldn't generate signed URL", err)
+			respondWithError(w, http.StatusInternalServerError, "Couldn't generate presigned URL", err)
 			return
 		}
-		result_videos[i] = video
+		videos[i] = video
 	}
-	fmt.Println("Generated signed URLs for videos:", videos)
-	respondWithJSON(w, http.StatusOK, result_videos)
+
+	respondWithJSON(w, http.StatusOK, videos)
 }
