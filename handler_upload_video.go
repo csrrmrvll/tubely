@@ -11,10 +11,13 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/csrrmrvll/tubely/internal/auth"
+	"github.com/csrrmrvll/tubely/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -138,6 +141,14 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	video, err = cfg.dbVideoToSignedVideo(video)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't generate signed URL", err)
+		return
+	}
+	fmt.Println("Generated presigned URL for video:", *video.VideoURL)
+	fmt.Println("-----------------------------")
+	fmt.Println("Video full details:", video)
 	respondWithJSON(w, http.StatusOK, video)
 }
 
@@ -202,4 +213,21 @@ func processVideoForFastStart(inputFilePath string) (string, error) {
 	}
 
 	return processedFilePath, nil
+}
+
+func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) {
+	if video.VideoURL == nil {
+		return video, nil
+	}
+
+	parts := strings.SplitN(*video.VideoURL, ",", 2)
+	bucket := parts[0]
+	key := parts[1]
+	preSignedURL, err := generatePresignedURL(cfg.s3Client, bucket, key, 15*time.Minute)
+	if err != nil {
+		return video, fmt.Errorf("failed to generate presigned URL: %w", err)
+	}
+
+	video.VideoURL = &preSignedURL
+	return video, nil
 }
